@@ -1,5 +1,7 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 
+use crate::config::PAGE_SIZE;
+
 use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -8,14 +10,22 @@ use bitflags::*;
 bitflags! {
     /// page table entry flags
     pub struct PTEFlags: u8 {
+        /// valid
         const V = 1 << 0;
-        const R = 1 << 1;
-        const W = 1 << 2;
-        const X = 1 << 3;
-        const U = 1 << 4;
-        const G = 1 << 5;
-        const A = 1 << 6;
-        const D = 1 << 7;
+        /// read
+        const R = 1 << 1;   
+        /// write
+        const W = 1 << 2;   
+        /// excute
+        const X = 1 << 3;   
+        /// visit in user mode
+        const U = 1 << 4;   
+        /// ?
+        const G = 1 << 5;   
+        /// A
+        const A = 1 << 6;   
+        /// D
+        const D = 1 << 7;   
     }
 }
 
@@ -170,4 +180,102 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         start = end_va.into();
     }
     v
+}
+
+// // Translate a pointer to a mutable reference
+// pub fn translated_mut_byte_array(token: usize, ptr: *mut u8, len: usize) -> Vec<&'static mut u8> {
+//     let page_table = PageTable::from_token(token);
+//     let mut now = ptr as usize;
+//     let end = now + len;
+//     let mut ret = Vec::new();
+//     while now < end {
+//         let now_va = VirtAddr::from(now);
+//         let vpn = now_va.floor();
+//         let mut now_phys_ptr: usize = PhysAddr::from(page_table.translate(vpn).unwrap().ppn()).into();
+//         now_phys_ptr += now_va.page_offset();
+//         let now_mut = unsafe {
+//             &mut *(now_phys_ptr as *mut u8)
+//         };
+//         ret.push(now_mut);
+//         now += 1;
+//     }
+//     ret
+// }
+
+/// Copies the contents of a source structure to a translated destination address byte by byte.
+pub fn copy_to_translated_addr<T>(token: usize, src: &T, dist: *mut T, len: usize) {
+    let page_table = PageTable::from_token(token);
+    let mut src = src as *const T as *const u8 as usize;
+    let mut dist = dist as *mut u8 as usize;
+    let end = dist + len;
+    while dist < end {
+        let dist_va = VirtAddr::from(dist);
+        let vpn = dist_va.floor();
+        let ppn = page_table.translate(vpn).unwrap().ppn();
+        let dist_phys_ptr = ppn.0 + dist_va.page_offset();
+        unsafe {
+            *(dist_phys_ptr as *mut u8) = *(src as *const u8);
+        }
+        src += 1;
+        dist += 1;
+    }
+    unsafe {
+        println!("Ts: {}", *((dist-len) as *const usize));
+        println!("Ts: {}", *((dist-len+8) as *const usize));
+    }
+}
+
+/// Apply for memory
+pub fn mmap(
+    token: usize,
+    start: usize,
+    len: usize,
+    port: usize,
+) -> Result<Vec<(VirtPageNum, FrameTracker)>, &'static str> {
+    if start % PAGE_SIZE != 0 {
+        return Err("Not aligned");
+    }
+    if port & !0x7 != 0 || port & 0x7 == 0 {
+        return Err("Invalid port");
+    }
+    let mut start_vpn = VirtAddr::from(start).floor();
+    let end_vpn = VirtAddr::from(start + len).ceil();
+    let mut page_table = PageTable::from_token(token);
+    let mut frames = Vec::new();
+    while start_vpn < end_vpn {
+        let phys_frame = frame_alloc().ok_or("Run out of memory")?;
+        let pte = page_table.find_pte_create(start_vpn).unwrap();
+        if pte.is_valid() {
+            return Err("Page mapped before");
+        }
+
+        *pte = PageTableEntry::new(phys_frame.ppn, PTEFlags::from_bits((port<<1) as u8).unwrap() | PTEFlags::U | PTEFlags::V);
+        frames.push((start_vpn, phys_frame));
+
+        start_vpn.step();
+    }
+
+    Ok(frames)
+}
+
+/// Withdraw
+pub fn munmap(token: usize, start: usize, len: usize) -> Result<Vec<VirtPageNum>,&'static str> {
+    let mut start_vpn = VirtAddr::from(start).floor();
+    let end_vpn = VirtAddr::from(start + len).ceil();
+    let page_table = PageTable::from_token(token);
+    let mut unmapped_vpns = Vec::new();
+
+    while start_vpn < end_vpn {
+        let pte = page_table.find_pte(start_vpn).ok_or("Unmapped page")?;
+        if !pte.is_valid() {
+            return Err("Unmapped page");
+        }
+        
+        unmapped_vpns.push(start_vpn);
+        *pte = PageTableEntry::empty();
+
+        start_vpn.step();
+    }
+
+    Ok(unmapped_vpns)
 }

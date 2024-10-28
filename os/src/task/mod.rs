@@ -15,8 +15,11 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{FrameTracker, VirtPageNum};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
+use crate::timer::get_time_ms;
+use crate::config::MAX_SYSCALL_NUM;
 use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
@@ -139,7 +142,11 @@ impl TaskManager {
         if let Some(next) = self.find_next_task() {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
-            inner.tasks[next].task_status = TaskStatus::Running;
+            let next_task_block: &mut TaskControlBlock = &mut inner.tasks[next];
+            next_task_block.task_status = TaskStatus::Running;
+            if next_task_block.start_time == 0 {
+                next_task_block.start_time = get_time_ms();
+            }
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
@@ -152,6 +159,34 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    fn get_current_task_run_time(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        get_time_ms() - inner.tasks[inner.current_task].start_time
+    }
+
+    fn incr_syscall_counts(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        inner.tasks[current_task].syscall_times[syscall_id] += 1
+    }
+
+    fn get_current_task_syscall_times(&self) -> [u32;MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        inner.tasks[inner.current_task].syscall_times.clone()
+    }
+
+    fn register_new_frame(&self, vpn: VirtPageNum, frame: FrameTracker) {
+        let mut inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        inner.tasks[current_task].applied_frames.insert(vpn, frame);
+    }
+
+    fn unregister_frame(&self, vpn: VirtPageNum) {
+        let mut inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        inner.tasks[current_task].applied_frames.remove(&vpn);
     }
 }
 
@@ -201,4 +236,29 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Get the running time of the current task
+pub fn get_current_task_run_time() -> usize {
+    TASK_MANAGER.get_current_task_run_time()
+}
+
+/// Increase a syscall count by one 
+pub fn incr_syscall_counts(syscall_id: usize) {
+    TASK_MANAGER.incr_syscall_counts(syscall_id);
+}
+
+/// Get the syscall counting array of the current task
+pub fn get_current_task_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
+    TASK_MANAGER.get_current_task_syscall_times()
+}
+
+/// Register a new applied frame
+pub fn register_new_frame(vpn: VirtPageNum, frame: FrameTracker) {
+    TASK_MANAGER.register_new_frame(vpn, frame);
+}
+
+/// Unregister a frame
+pub fn unregister_frame(vpn: VirtPageNum) {
+    TASK_MANAGER.unregister_frame(vpn);
 }

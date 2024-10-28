@@ -1,8 +1,10 @@
 //! Types related to task management
+use alloc::collections::BTreeMap;
+
 use super::TaskContext;
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{TRAP_CONTEXT_BASE, MAX_SYSCALL_NUM};
 use crate::mm::{
-    kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
+    kernel_stack_position, FrameTracker, MapPermission, MemorySet, PhysPageNum, VirtAddr, VirtPageNum, KERNEL_SPACE
 };
 use crate::trap::{trap_handler, TrapContext};
 
@@ -28,6 +30,15 @@ pub struct TaskControlBlock {
 
     /// Program break
     pub program_brk: usize,
+
+    /// The time when the task begin to run
+    pub start_time: usize,
+
+    /// The syscall counting barrel array
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
+
+    /// Mmaped FrameTrackers
+    pub applied_frames: BTreeMap<VirtPageNum, FrameTracker>
 }
 
 impl TaskControlBlock {
@@ -63,6 +74,9 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            start_time: 0,
+            syscall_times: [0; MAX_SYSCALL_NUM],
+            applied_frames: BTreeMap::new(),
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();
@@ -96,6 +110,7 @@ impl TaskControlBlock {
             None
         }
     }
+
 }
 
 #[derive(Copy, Clone, PartialEq)]
