@@ -34,6 +34,7 @@ lazy_static! {
 pub struct MemorySet {
     page_table: PageTable,
     areas: Vec<MapArea>,
+    applied_frames: BTreeMap<VirtPageNum, FrameTracker>,
 }
 
 impl MemorySet {
@@ -42,6 +43,7 @@ impl MemorySet {
         Self {
             page_table: PageTable::new(),
             areas: Vec::new(),
+            applied_frames: BTreeMap::new(),
         }
     }
     /// Get the page table token
@@ -299,6 +301,59 @@ impl MemorySet {
         } else {
             false
         }
+    }
+
+    /// Apply for memory
+    pub fn mmap(
+        &mut self,
+        start: usize,
+        len: usize,
+        port: usize,
+    ) -> Result<(), &'static str> {
+        if start % PAGE_SIZE != 0 {
+            return Err("Not aligned");
+        }
+        if port & !0x7 != 0 || port & 0x7 == 0 {
+            return Err("Invalid port"); 
+        }
+        let mut start_vpn = VirtAddr::from(start).floor();
+        let end_vpn = VirtAddr::from(start + len).ceil();
+        let flags = PTEFlags::from_bits((port<<1) as u8).unwrap() | PTEFlags::U | PTEFlags::V;
+        while start_vpn < end_vpn {
+            let phys_frame = frame_alloc().ok_or("Run out of memory")?;
+            if let Some(pte) = self.page_table.translate(start_vpn) {
+                if pte.is_valid(){
+                    return Err("Page mapped before");
+                }
+            }
+
+            self.page_table.map(start_vpn, phys_frame.ppn, flags);
+            self.applied_frames.insert(start_vpn, phys_frame);
+
+            start_vpn.step();
+        }
+
+        Ok(())
+    }
+
+    /// Withdraw
+    pub fn munmap(&mut self, start: usize, len: usize) -> Result<(),&'static str> {
+        let mut start_vpn = VirtAddr::from(start).floor();
+        let end_vpn = VirtAddr::from(start + len).ceil();
+
+        while start_vpn < end_vpn {
+            let pte = self.page_table.translate(start_vpn).ok_or("Unmapped page")?;
+            if !pte.is_valid() {
+                return Err("Unmapped page");
+            }
+            
+            self.page_table.unmap(start_vpn);
+            self.applied_frames.remove(&start_vpn);
+
+            start_vpn.step();
+        }
+
+        Ok(())
     }
 }
 /// map area structure, controls a contiguous piece of virtual memory
