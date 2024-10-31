@@ -1,7 +1,7 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
@@ -71,6 +71,12 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// The time when the task begin to run
+    pub start_time: usize,
+
+    /// The syscall counting barrel array
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
 }
 
 impl TaskControlBlockInner {
@@ -135,6 +141,8 @@ impl TaskControlBlock {
                     ],
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    start_time: 0,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
         };
@@ -216,6 +224,8 @@ impl TaskControlBlock {
                     fd_table: new_fd_table,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    start_time: 0,
+                    syscall_times: [0, MAX_SYSCALL_NUM],
                 })
             },
         });
@@ -260,6 +270,16 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// Apply for memory
+    pub fn mmap(&mut self, start: usize, len: usize, port: usize) -> Result<(), &'static str> {
+        self.memory_set.mmap(start, len, port)
+    }
+
+    /// Withdraw
+    pub fn munmap(&mut self, start: usize, len: usize) -> Result<(), &'static str> {
+        self.memory_set.munmap(start, len)
     }
 }
 
