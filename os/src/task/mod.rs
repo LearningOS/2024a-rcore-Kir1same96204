@@ -14,12 +14,11 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::loader::{get_app_data, get_num_app};
-use crate::mm::{FrameTracker, VirtPageNum};
-use crate::sync::UPSafeCell;
-use crate::trap::TrapContext;
-use crate::timer::get_time_ms;
 use crate::config::MAX_SYSCALL_NUM;
+use crate::loader::{get_app_data, get_num_app};
+use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
+use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
@@ -172,21 +171,23 @@ impl TaskManager {
         inner.tasks[current_task].syscall_times[syscall_id] += 1
     }
 
-    fn get_current_task_syscall_times(&self) -> [u32;MAX_SYSCALL_NUM] {
+    fn get_current_task_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
         let inner = self.inner.exclusive_access();
         inner.tasks[inner.current_task].syscall_times.clone()
     }
 
-    fn register_new_frame(&self, vpn: VirtPageNum, frame: FrameTracker) {
+    /// Apply for memory
+    pub fn current_mmap(&self, start: usize, len: usize, port: usize) -> Result<(), &'static str> {
         let mut inner = self.inner.exclusive_access();
-        let current_task = inner.current_task;
-        inner.tasks[current_task].applied_frames.insert(vpn, frame);
+        let cur = inner.current_task;
+        inner.tasks[cur].mmap(start, len, port)
     }
 
-    fn unregister_frame(&self, vpn: VirtPageNum) {
+    /// Withdraw
+    pub fn current_munmap(&self, start: usize, len: usize) -> Result<(), &'static str> {
         let mut inner = self.inner.exclusive_access();
-        let current_task = inner.current_task;
-        inner.tasks[current_task].applied_frames.remove(&vpn);
+        let cur = inner.current_task;
+        inner.tasks[cur].munmap(start, len)
     }
 }
 
@@ -243,7 +244,7 @@ pub fn get_current_task_run_time() -> usize {
     TASK_MANAGER.get_current_task_run_time()
 }
 
-/// Increase a syscall count by one 
+/// Increase a syscall count by one
 pub fn incr_syscall_counts(syscall_id: usize) {
     TASK_MANAGER.incr_syscall_counts(syscall_id);
 }
@@ -253,12 +254,12 @@ pub fn get_current_task_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
     TASK_MANAGER.get_current_task_syscall_times()
 }
 
-/// Register a new applied frame
-pub fn register_new_frame(vpn: VirtPageNum, frame: FrameTracker) {
-    TASK_MANAGER.register_new_frame(vpn, frame);
+/// Apply for memory
+pub fn mmap(start: usize, len: usize, port: usize) -> Result<(), &'static str> {
+    TASK_MANAGER.current_mmap(start, len, port)
 }
 
-/// Unregister a frame
-pub fn unregister_frame(vpn: VirtPageNum) {
-    TASK_MANAGER.unregister_frame(vpn);
+/// Withdraw
+pub fn munmap(start: usize, len: usize) -> Result<(), &'static str> {
+    TASK_MANAGER.current_munmap(start, len)
 }

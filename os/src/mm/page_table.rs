@@ -1,8 +1,8 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 
-use crate::config::PAGE_SIZE;
+use crate::config::PAGE_SIZE_BITS;
 
-use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
@@ -202,80 +202,29 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
 //     ret
 // }
 
+/// Translate a virtual address to physical address
+pub fn translate(token: usize, va: VirtAddr) -> Option<PhysAddr> {
+    let page_table = PageTable::from_token(token);
+    let vpn = va.floor();
+    let ppn = page_table.translate(vpn)?.ppn();
+    let pa = (ppn.0 << PAGE_SIZE_BITS) + va.page_offset();
+    Some(pa.into())
+}
+
 /// Copies the contents of a source structure to a translated destination address byte by byte.
 pub fn copy_to_translated_addr<T>(token: usize, src: &T, dist: *mut T, len: usize) {
-    let page_table = PageTable::from_token(token);
     let mut src = src as *const T as *const u8 as usize;
     let mut dist = dist as *mut u8 as usize;
     let end = dist + len;
     while dist < end {
         let dist_va = VirtAddr::from(dist);
-        let vpn = dist_va.floor();
-        let ppn = page_table.translate(vpn).unwrap().ppn();
-        let dist_phys_ptr = ppn.0 + dist_va.page_offset();
+        let dist_pa = translate(token, dist_va).unwrap();
+        let dist_ref: &mut u8 = dist_pa.get_mut();
         unsafe {
-            *(dist_phys_ptr as *mut u8) = *(src as *const u8);
+            *dist_ref = *(src as *const u8);
         }
         src += 1;
         dist += 1;
     }
-    unsafe {
-        println!("Ts: {}", *((dist-len) as *const usize));
-        println!("Ts: {}", *((dist-len+8) as *const usize));
-    }
 }
 
-/// Apply for memory
-pub fn mmap(
-    token: usize,
-    start: usize,
-    len: usize,
-    port: usize,
-) -> Result<Vec<(VirtPageNum, FrameTracker)>, &'static str> {
-    if start % PAGE_SIZE != 0 {
-        return Err("Not aligned");
-    }
-    if port & !0x7 != 0 || port & 0x7 == 0 {
-        return Err("Invalid port");
-    }
-    let mut start_vpn = VirtAddr::from(start).floor();
-    let end_vpn = VirtAddr::from(start + len).ceil();
-    let mut page_table = PageTable::from_token(token);
-    let mut frames = Vec::new();
-    while start_vpn < end_vpn {
-        let phys_frame = frame_alloc().ok_or("Run out of memory")?;
-        let pte = page_table.find_pte_create(start_vpn).unwrap();
-        if pte.is_valid() {
-            return Err("Page mapped before");
-        }
-
-        *pte = PageTableEntry::new(phys_frame.ppn, PTEFlags::from_bits((port<<1) as u8).unwrap() | PTEFlags::U | PTEFlags::V);
-        frames.push((start_vpn, phys_frame));
-
-        start_vpn.step();
-    }
-
-    Ok(frames)
-}
-
-/// Withdraw
-pub fn munmap(token: usize, start: usize, len: usize) -> Result<Vec<VirtPageNum>,&'static str> {
-    let mut start_vpn = VirtAddr::from(start).floor();
-    let end_vpn = VirtAddr::from(start + len).ceil();
-    let page_table = PageTable::from_token(token);
-    let mut unmapped_vpns = Vec::new();
-
-    while start_vpn < end_vpn {
-        let pte = page_table.find_pte(start_vpn).ok_or("Unmapped page")?;
-        if !pte.is_valid() {
-            return Err("Unmapped page");
-        }
-        
-        unmapped_vpns.push(start_vpn);
-        *pte = PageTableEntry::empty();
-
-        start_vpn.step();
-    }
-
-    Ok(unmapped_vpns)
-}

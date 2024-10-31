@@ -1,10 +1,8 @@
 //! Types related to task management
-use alloc::collections::BTreeMap;
-
 use super::TaskContext;
-use crate::config::{TRAP_CONTEXT_BASE, MAX_SYSCALL_NUM};
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::mm::{
-    kernel_stack_position, FrameTracker, MapPermission, MemorySet, PhysPageNum, VirtAddr, VirtPageNum, KERNEL_SPACE
+    kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
 };
 use crate::trap::{trap_handler, TrapContext};
 
@@ -36,9 +34,6 @@ pub struct TaskControlBlock {
 
     /// The syscall counting barrel array
     pub syscall_times: [u32; MAX_SYSCALL_NUM],
-
-    /// Mmaped FrameTrackers
-    pub applied_frames: BTreeMap<VirtPageNum, FrameTracker>
 }
 
 impl TaskControlBlock {
@@ -76,7 +71,6 @@ impl TaskControlBlock {
             program_brk: user_sp,
             start_time: 0,
             syscall_times: [0; MAX_SYSCALL_NUM],
-            applied_frames: BTreeMap::new(),
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();
@@ -111,6 +105,15 @@ impl TaskControlBlock {
         }
     }
 
+    /// Apply for memory
+    pub fn mmap(&mut self, start: usize, len: usize, port: usize) -> Result<(), &'static str> {
+        self.memory_set.mmap(start, len, port)
+    }
+
+    /// Withdraw
+    pub fn munmap(&mut self, start: usize, len: usize) -> Result<(), &'static str> {
+        self.memory_set.munmap(start, len)
+    }
 }
 
 #[derive(Copy, Clone, PartialEq)]

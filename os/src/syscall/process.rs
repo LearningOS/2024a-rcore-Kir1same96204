@@ -1,11 +1,13 @@
 //! Process management syscalls
 use crate::{
     config::MAX_SYSCALL_NUM,
-    mm::{copy_to_translated_addr, mmap, munmap},
+    mm::copy_to_translated_addr,
     task::{
-        change_program_brk, current_user_token, exit_current_and_run_next, get_current_task_run_time, get_current_task_syscall_times, register_new_frame, suspend_current_and_run_next, unregister_frame, TaskStatus
+        change_program_brk, current_user_token, exit_current_and_run_next,
+        get_current_task_run_time, get_current_task_syscall_times, mmap, munmap,
+        suspend_current_and_run_next, TaskStatus,
     },
-    timer::get_time,
+    timer::get_time_us,
 };
 
 #[repr(C)]
@@ -45,7 +47,7 @@ pub fn sys_yield() -> isize {
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
     trace!("kernel: sys_get_time");
-    let us = get_time();
+    let us = get_time_us();
     let ts = TimeVal {
         sec: us / 1_000_000,
         usec: us % 1_000_000,
@@ -64,7 +66,7 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
         syscall_times: get_current_task_syscall_times(),
         time: get_current_task_run_time(),
     };
-    copy_to_translated_addr(current_user_token(), &ti, _ti as *mut TaskInfo, 2016);
+    copy_to_translated_addr(current_user_token(), &ti, _ti, 2016);
     0
 }
 
@@ -72,32 +74,14 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
     trace!("kernel: sys_mmap");
 
-    match mmap(current_user_token(), _start, _len, _port) {
-        Err(_) => -1,
-        Ok(frames) => {
-            for (vpn, frame) in frames.into_iter() {
-                register_new_frame(vpn, frame);
-            }
-
-            0
-        },
-    }
+    mmap(_start, _len, _port).map_or(-1, |_| 0)
 }
 
 // YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
     trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
-    
-    match munmap(current_user_token(), _start, _len) {
-        Err(_) => -1,
-        Ok(unmmaped_vpns) => {
-            for vpn in unmmaped_vpns.into_iter() {
-                unregister_frame(vpn);
-            }
 
-            0
-        }
-    }
+    munmap(_start, _len).map_or(-1, |_| 0)
 }
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {
