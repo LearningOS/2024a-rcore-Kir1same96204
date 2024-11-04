@@ -57,11 +57,13 @@ mod process;
 use fs::*;
 use process::*;
 
-use crate::task::incr_syscall_counts;
+use crate::task::{incr_syscall_counts, current_task};
 use crate::fs::Stat;
 /// handle syscall exception with `syscall_id` and other arguments
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
-    incr_syscall_counts(syscall_id);
+    current_task().unwrap()
+        .inner_exclusive_access()
+        .syscall_times[syscall_id] += 1;
     match syscall_id {
         SYSCALL_OPEN => sys_open(args[1] as *const u8, args[2] as u32),
         SYSCALL_CLOSE => sys_close(args[0]),

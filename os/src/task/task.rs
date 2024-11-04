@@ -5,6 +5,7 @@ use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
@@ -225,7 +226,7 @@ impl TaskControlBlock {
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
                     start_time: 0,
-                    syscall_times: [0, MAX_SYSCALL_NUM],
+                    syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
         });
@@ -273,13 +274,23 @@ impl TaskControlBlock {
     }
 
     /// Apply for memory
-    pub fn mmap(&mut self, start: usize, len: usize, port: usize) -> Result<(), &'static str> {
-        self.memory_set.mmap(start, len, port)
+    pub fn mmap(&self, start: usize, len: usize, port: usize) -> Result<(), &'static str> {
+        self.inner.exclusive_access().memory_set.mmap(start, len, port)
     }
 
     /// Withdraw
-    pub fn munmap(&mut self, start: usize, len: usize) -> Result<(), &'static str> {
-        self.memory_set.munmap(start, len)
+    pub fn munmap(&self, start: usize, len: usize) -> Result<(), &'static str> {
+        self.inner.exclusive_access().memory_set.munmap(start, len)
+    }
+
+    /// get current task's running time
+    pub fn get_run_time(&self) -> usize {
+        get_time_ms() - self.inner.exclusive_access().start_time
+    }
+
+    /// get current task's syscall counts
+    pub fn get_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        self.inner.exclusive_access().syscall_times.clone()
     }
 }
 
