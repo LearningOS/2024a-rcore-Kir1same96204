@@ -78,6 +78,12 @@ pub struct TaskControlBlockInner {
 
     /// The syscall counting barrel array
     pub syscall_times: [u32; MAX_SYSCALL_NUM],
+
+    /// Task priority
+    pub priority: u64,
+
+    /// Currunt stride
+    pub stride: u64,
 }
 
 impl TaskControlBlockInner {
@@ -144,6 +150,8 @@ impl TaskControlBlock {
                     program_brk: user_sp,
                     start_time: 0,
                     syscall_times: [0; MAX_SYSCALL_NUM],
+                    priority: 16,
+                    stride: 0,
                 })
             },
         };
@@ -227,6 +235,8 @@ impl TaskControlBlock {
                     program_brk: parent_inner.program_brk,
                     start_time: 0,
                     syscall_times: [0; MAX_SYSCALL_NUM],
+                    priority: parent_inner.priority,
+                    stride: 0,
                 })
             },
         });

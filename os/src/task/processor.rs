@@ -7,6 +7,7 @@
 use super::__switch;
 use super::{fetch_task, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
+use crate::config::BIG_STRIDE;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::sync::Arc;
@@ -102,6 +103,12 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 
 ///Return to idle control flow for new scheduling
 pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
+    if let Some(task) = current_task() {
+        let mut inner = task.inner_exclusive_access();
+        let incr_stride = BIG_STRIDE / inner.priority;
+        inner.stride += incr_stride;
+    }
+
     let mut processor = PROCESSOR.exclusive_access();
     let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
     drop(processor);
