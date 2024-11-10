@@ -1,5 +1,5 @@
 //! Types related to task management & Functions for completely changing TCB
-use super::TaskContext;
+use super::{add_task, TaskContext};
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::fs::{File, Stdin, Stdout};
@@ -250,6 +250,16 @@ impl TaskControlBlock {
         task_control_block
         // **** release child PCB
         // ---- release parent PCB
+    }
+
+    /// spawn a child task
+    pub fn spawn(self: Arc<Self>, task_elf_data: &[u8]) -> Arc<TaskControlBlock>{
+        let task = Arc::new(TaskControlBlock::new(task_elf_data));
+        let mut inner = self.inner_exclusive_access();
+        inner.children.push(task.clone());
+        task.inner_exclusive_access().parent = Some(Arc::downgrade(&self));
+        add_task(task.clone());
+        task
     }
 
     /// get pid of process

@@ -31,7 +31,7 @@ impl Ord for TaskControlBlock {
     fn cmp(&self, other: &Self) -> Ordering {
         let inner = self.inner_exclusive_access();
         let other_inner = other.inner_exclusive_access();
-        inner.stride.cmp(&other_inner.stride)
+        inner.stride.cmp(&other_inner.stride).reverse()
     }
 }
 

@@ -7,7 +7,7 @@ use crate::{
     fs::{open_file, OpenFlags},
     mm::{translated_refmut, translated_str, copy_to_translated_addr},
     task::{
-        add_task, current_task, current_user_token, exit_current_and_run_next, suspend_current_and_run_next, TaskControlBlock, TaskStatus
+        add_task, current_task, current_user_token, exit_current_and_run_next, suspend_current_and_run_next, TaskStatus
     },
     timer::get_time_us,
 };
@@ -187,16 +187,12 @@ pub fn sys_spawn(_path: *const u8) -> isize {
     
     let token = current_user_token();
     let path = translated_str(token, _path);
-    if let Some(data) = get_app_data_by_name(path.as_str()) {
-        let task_control_block = Arc::new(TaskControlBlock::new(data));
-        let mut inner = task_control_block.inner_exclusive_access();
-        inner.parent = Some(Arc::downgrade(&current_task));
-        let mut current_inner = current_task.inner_exclusive_access();
-        current_inner.children.push(task_control_block.clone());
+    if let Some(app_inode) = open_file(path.as_str(), OpenFlags::RDONLY) {
+        let all_data = app_inode.read_all();
+        let new_tcb = current_task.spawn(all_data.as_slice());
+        let new_pid = new_tcb.pid.0;
+        // println!("SPAWNED: newpid {} {}, parent pid: {:?}", &new_pid, &path, &current_task.pid.0);
 
-        drop(inner);
-        let new_pid = task_control_block.pid.0;
-        add_task(task_control_block);
         new_pid as isize
     } else {
         -1
