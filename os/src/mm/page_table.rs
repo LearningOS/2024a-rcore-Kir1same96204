@@ -1,7 +1,6 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::string::String;
-use crate::config::PAGE_SIZE_BITS;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
@@ -9,22 +8,14 @@ use bitflags::*;
 bitflags! {
     /// page table entry flags
     pub struct PTEFlags: u8 {
-        /// valid
         const V = 1 << 0;
-        /// read
-        const R = 1 << 1;   
-        /// write
-        const W = 1 << 2;   
-        /// excute
-        const X = 1 << 3;   
-        /// visit in user mode
-        const U = 1 << 4;   
-        /// ?
-        const G = 1 << 5;   
-        /// A
-        const A = 1 << 6;   
-        /// D
-        const D = 1 << 7;   
+        const R = 1 << 1;
+        const W = 1 << 2;
+        const X = 1 << 3;
+        const U = 1 << 4;
+        const G = 1 << 5;
+        const A = 1 << 6;
+        const D = 1 << 7;
     }
 }
 
@@ -285,29 +276,12 @@ impl Iterator for UserBufferIterator {
         }
     }
 }
-/// Translate a virtual address to physical address
-pub fn translate(token: usize, va: VirtAddr) -> Option<PhysAddr> {
+/// Translate a virtual address to a physical address
+pub fn translate_va_to_pa(token: usize, ptr: usize) -> usize {
     let page_table = PageTable::from_token(token);
+    let va = VirtAddr::from(ptr);
     let vpn = va.floor();
-    let ppn = page_table.translate(vpn)?.ppn();
-    let pa = (ppn.0 << PAGE_SIZE_BITS) + va.page_offset();
-    Some(pa.into())
+    let ppn = page_table.translate(vpn).unwrap().ppn();
+    let pa = usize::from(ppn) << 12 | va.page_offset();
+    pa.into()
 }
-
-/// Copies the contents of a source structure to a translated destination address byte by byte.
-pub fn copy_to_translated_addr<T>(token: usize, src: &T, dist: *mut T, len: usize) {
-    let mut src = src as *const T as *const u8 as usize;
-    let mut dist = dist as *mut u8 as usize;
-    let end = dist + len;
-    while dist < end {
-        let dist_va = VirtAddr::from(dist);
-        let dist_pa = translate(token, dist_va).unwrap();
-        let dist_ref: &mut u8 = dist_pa.get_mut();
-        unsafe {
-            *dist_ref = *(src as *const u8);
-        }
-        src += 1;
-        dist += 1;
-    }
-}
-

@@ -52,47 +52,14 @@ impl Inode {
                 disk_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device,),
                 DIRENT_SZ,
             );
+            if !dirent.valid() {
+                continue;
+            }
             if dirent.name() == name {
                 return Some(dirent.inode_id() as u32);
             }
         }
         None
-    }
-    /// is file
-    pub fn is_file(&self) -> bool {
-        self.read_disk_inode(|inode| {
-            inode.is_file()
-        })
-    }
-    /// is dir
-    pub fn is_dir(&self) -> bool {
-        self.read_disk_inode(|inode| {
-            inode.is_dir()
-        })
-    }
-
-    /// get number of link
-    pub fn nlink(&self, inode_id: u32) -> u32 {
-        let mut n_link = 0;
-        self.read_disk_inode(|root_inode| {
-            let file_count = (root_inode.size as usize) / DIRENT_SZ;
-            let mut dirent = DirEntry::empty();
-            for i in 0..file_count {
-                assert_eq!(
-                    root_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device,),
-                    DIRENT_SZ,
-                );
-                if dirent.inode_id() == inode_id {
-                    n_link += 1;
-                }
-            }
-        });
-        n_link
-    }
-    /// Get the inode id 
-    pub fn get_inode_id(&self) -> u32 {
-        let fs = self.fs.lock();
-        fs.get_inode_id(self.block_id as u32, self.block_offset)
     }
     /// Find inode under current inode by name
     pub fn find(&self, name: &str) -> Option<Arc<Inode>> {
@@ -174,76 +141,6 @@ impl Inode {
         )))
         // release efs lock automatically by compiler
     }
-
-    /// Linkat
-    pub fn linkat(&self, old_name: &str, new_name: &str) -> Result<(), String> {
-        let mut fs = self.fs.lock();
-        let old_disk_inode = self.read_disk_inode(|root_inode| {
-            self.find_inode_id(old_name, root_inode)
-        }).ok_or("Old file does not exist")?;
-        self.modify_disk_inode(|root_inode| {
-            // append new entry
-            let file_count = (root_inode.size as usize) / DIRENT_SZ;
-            let new_size = (file_count + 1) * DIRENT_SZ;
-            // increase size
-            self.increase_size(new_size as u32, root_inode, &mut fs);
-            // write dirent with the new name but point to the disk inode of the old file
-            let dirent = DirEntry::new(new_name, old_disk_inode);
-            root_inode.write_at(
-                file_count * DIRENT_SZ,
-                dirent.as_bytes(),
-                &self.block_device,
-            );
-            Ok(())
-        })
-    }
-
-    /// Unlinkat
-    pub fn unlinkat(&self, name: &str) -> Result<(), String> {
-        let mut fs = self.fs.lock();
-        let disk_inode = self.read_disk_inode(|root_inode| {
-            self.find_inode_id(name, root_inode).ok_or("File does not exist")
-        })?;
-        self.modify_disk_inode(|root_inode| {
-            // let disk_inode = self.find_inode_id(name, root_inode).ok_or("File does not exist")?;
-
-            // find if only one entry is linked to this inode
-            let mut single_link = true;
-            let file_count = (root_inode.size as usize) / DIRENT_SZ;
-            let mut dirent = DirEntry::empty();
-
-            for i in 0..file_count {
-                assert_eq!(
-                    root_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device,),
-                    DIRENT_SZ,
-                );
-                if dirent.inode_id() == disk_inode{
-                    if dirent.name() != name {
-                        single_link = false;
-                    } else {
-                        root_inode.write_at(
-                            i * DIRENT_SZ,
-                            DirEntry::empty().as_bytes(), 
-                            &self.block_device
-                        );
-                    }
-                }
-            }
-
-            // if single_link {
-            //     // delete file
-            //     fs.dealloc_inode(disk_inode);
-            // }
-
-            Ok(single_link)
-        }).map(|is_single| {
-            if is_single {
-                fs.dealloc_inode(disk_inode);
-            }
-        })
-    }
-
-
     /// List inodes under current inode
     pub fn ls(&self) -> Vec<String> {
         let _fs = self.fs.lock();
@@ -256,6 +153,9 @@ impl Inode {
                     disk_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device,),
                     DIRENT_SZ,
                 );
+                if !dirent.valid() {
+                    continue;
+                }
                 v.push(String::from(dirent.name()));
             }
             v
@@ -285,6 +185,45 @@ impl Inode {
             assert!(data_blocks_dealloc.len() == DiskInode::total_blocks(size) as usize);
             for data_block in data_blocks_dealloc.into_iter() {
                 fs.dealloc_data(data_block);
+            }
+        });
+        block_cache_sync_all();
+    }
+    /// Get the inode id of current inode
+    pub fn get_inode_id(&self) -> usize {
+        let fs = self.fs.lock();
+        fs.get_inode_id_by_block_id(self.block_id as u32, self.block_offset) as usize
+    }
+    /// Link to a new name
+    pub fn link(&self, inode_id: usize, new_name: &str) {
+        let mut fs = self.fs.lock();
+        self.modify_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let new_size = (file_count + 1) * DIRENT_SZ;
+            self.increase_size(new_size as u32, root_inode, &mut fs);
+            let dirent = DirEntry::new(new_name, inode_id as u32);
+            root_inode.write_at(
+                file_count * DIRENT_SZ,
+                dirent.as_bytes(),
+                &self.block_device,
+            );
+        });
+        block_cache_sync_all();
+    }
+    /// Unlink the inode
+    pub fn unlink(&self, name: &str) {
+        self.modify_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            for i in 0..file_count {
+                let mut dirent = DirEntry::empty();
+                assert_eq!(
+                    root_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device,),
+                    DIRENT_SZ,
+                );
+                if dirent.name() == name {
+                    dirent.invalidate();
+                    root_inode.write_at(i * DIRENT_SZ, dirent.as_bytes(), &self.block_device);
+                }
             }
         });
         block_cache_sync_all();
