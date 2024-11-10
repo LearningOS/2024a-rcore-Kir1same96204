@@ -14,13 +14,13 @@
 
 mod context;
 
-use crate::config::TRAMPOLINE;
+use crate::config::{TRAMPOLINE, TRAP_CONTEXT_BASE};
 use crate::syscall::syscall;
 use crate::task::{
-    check_signals_of_current, current_add_signal, current_trap_cx, current_trap_cx_user_va,
-    current_user_token, exit_current_and_run_next, suspend_current_and_run_next, SignalFlags,
+    current_trap_cx, current_user_token, exit_current_and_run_next, suspend_current_and_run_next,
+    update_syscall_times,
 };
-use crate::timer::{check_timer, set_next_trigger};
+use crate::timer::set_next_trigger;
 use core::arch::{asm, global_asm};
 use riscv::register::{
     mtvec::TrapMode,
@@ -34,16 +34,13 @@ global_asm!(include_str!("trap.S"));
 pub fn init() {
     set_kernel_trap_entry();
 }
-/// set trap entry for traps happen in kernel(supervisor) mode
+
 fn set_kernel_trap_entry() {
-    extern "C" {
-        fn __trap_from_kernel();
-    }
     unsafe {
-        stvec::write(__trap_from_kernel as usize, TrapMode::Direct);
+        stvec::write(trap_from_kernel as usize, TrapMode::Direct);
     }
 }
-/// set trap entry for traps happen in user mode
+
 fn set_user_trap_entry() {
     unsafe {
         stvec::write(TRAMPOLINE as usize, TrapMode::Direct);
@@ -68,6 +65,7 @@ pub fn trap_handler() -> ! {
         Trap::Exception(Exception::UserEnvCall) => {
             // jump to next instruction anyway
             let mut cx = current_trap_cx();
+            update_syscall_times(cx.x[17] as usize);
             cx.sepc += 4;
             // get system call return value
             let result = syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12], cx.x[13]]);
@@ -81,20 +79,22 @@ pub fn trap_handler() -> ! {
         | Trap::Exception(Exception::InstructionPageFault)
         | Trap::Exception(Exception::LoadFault)
         | Trap::Exception(Exception::LoadPageFault) => {
-            error!(
-                "[kernel] trap_handler: {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+            println!(
+                "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
                 scause.cause(),
                 stval,
                 current_trap_cx().sepc,
             );
-            current_add_signal(SignalFlags::SIGSEGV);
+            // page fault exit code
+            exit_current_and_run_next(-2);
         }
         Trap::Exception(Exception::IllegalInstruction) => {
-            current_add_signal(SignalFlags::SIGILL);
+            println!("[kernel] IllegalInstruction in application, kernel killed it.");
+            // illegal instruction exit code
+            exit_current_and_run_next(-3);
         }
         Trap::Interrupt(Interrupt::SupervisorTimer) => {
             set_next_trigger();
-            check_timer();
             suspend_current_and_run_next();
         }
         _ => {
@@ -105,20 +105,18 @@ pub fn trap_handler() -> ! {
             );
         }
     }
-    // check signals
-    if let Some((errno, msg)) = check_signals_of_current() {
-        trace!("[kernel] trap_handler: .. check signals {}", msg);
-        exit_current_and_run_next(errno);
-    }
+    //println!("before trap_return");
     trap_return();
 }
 
-/// return to user space
 #[no_mangle]
+/// return to user space
+/// set the new addr of __restore asm function in TRAMPOLINE page,
+/// set the reg a0 = trap_cx_ptr, reg a1 = phy addr of usr page table,
+/// finally, jump to new addr of __restore asm function
 pub fn trap_return() -> ! {
-    //disable_supervisor_interrupt();
     set_user_trap_entry();
-    let trap_cx_user_va = current_trap_cx_user_va();
+    let trap_cx_ptr = TRAP_CONTEXT_BASE;
     let user_satp = current_user_token();
     extern "C" {
         fn __alltraps();
@@ -129,17 +127,19 @@ pub fn trap_return() -> ! {
     unsafe {
         asm!(
             "fence.i",
-            "jr {restore_va}",         // jump to new addr of __restore asm function
+            "jr {restore_va}",
             restore_va = in(reg) restore_va,
-            in("a0") trap_cx_user_va,      // a0 = virt addr of Trap Context
-            in("a1") user_satp,        // a1 = phy addr of usr page table
+            in("a0") trap_cx_ptr,
+            in("a1") user_satp,
             options(noreturn)
         );
     }
 }
 
-/// handle trap from kernel
 #[no_mangle]
+/// handle trap from kernel
+/// Unimplement: traps/interrupts/exceptions from kernel mode
+/// Todo: Chapter 9: I/O device
 pub fn trap_from_kernel() -> ! {
     use riscv::register::sepc;
     trace!("stval = {:#x}, sepc = {:#x}", stval::read(), sepc::read());

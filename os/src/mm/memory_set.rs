@@ -1,10 +1,9 @@
-//! Address Space [`MemorySet`] management of Process
-
+//! Implementation of [`MapArea`] and [`MemorySet`].
 use super::{frame_alloc, FrameTracker};
 use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{PhysAddr, PhysPageNum, VirtAddr, VirtPageNum};
 use super::{StepByOne, VPNRange};
-use crate::config::{MEMORY_END, MMIO, PAGE_SIZE, TRAMPOLINE};
+use crate::config::{MEMORY_END, MMIO, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT_BASE, USER_STACK_SIZE};
 use crate::sync::UPSafeCell;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -39,10 +38,8 @@ pub fn kernel_token() -> usize {
 
 /// address space
 pub struct MemorySet {
-    /// page table
-    pub page_table: PageTable,
-    /// areas
-    pub areas: Vec<MapArea>,
+    page_table: PageTable,
+    areas: Vec<MapArea>,
 }
 
 impl MemorySet {
@@ -53,7 +50,7 @@ impl MemorySet {
             areas: Vec::new(),
         }
     }
-    /// Get he page table token
+    /// Get the page table token
     pub fn token(&self) -> usize {
         self.page_table.token()
     }
@@ -79,9 +76,14 @@ impl MemorySet {
         {
             area.unmap(&mut self.page_table);
             self.areas.remove(idx);
-            unsafe {
-                asm!("sfence.vma");
-            }
+        }
+    }
+    /// Drop the frame area
+    pub fn drop_frame_area(&mut self, start_va: VirtAddr, end_va: VirtAddr) {
+        let start_vpn: VirtPageNum = start_va.floor();
+        let end_vpn: VirtPageNum = end_va.ceil();
+        for vpn in VPNRange::new(start_vpn, end_vpn) {
+            self.page_table.unmap(vpn);
         }
     }
     /// Add a new MapArea into this MemorySet.
@@ -218,11 +220,42 @@ impl MemorySet {
         }
         // map user stack with U flags
         let max_end_va: VirtAddr = max_end_vpn.into();
-        let mut user_stack_base: usize = max_end_va.into();
-        user_stack_base += PAGE_SIZE;
+        let mut user_stack_bottom: usize = max_end_va.into();
+        // guard page
+        user_stack_bottom += PAGE_SIZE;
+        let user_stack_top = user_stack_bottom + USER_STACK_SIZE;
+        memory_set.push(
+            MapArea::new(
+                user_stack_bottom.into(),
+                user_stack_top.into(),
+                MapType::Framed,
+                MapPermission::R | MapPermission::W | MapPermission::U,
+            ),
+            None,
+        );
+        // used in sbrk
+        memory_set.push(
+            MapArea::new(
+                user_stack_top.into(),
+                user_stack_top.into(),
+                MapType::Framed,
+                MapPermission::R | MapPermission::W | MapPermission::U,
+            ),
+            None,
+        );
+        // map TrapContext
+        memory_set.push(
+            MapArea::new(
+                TRAP_CONTEXT_BASE.into(),
+                TRAMPOLINE.into(),
+                MapType::Framed,
+                MapPermission::R | MapPermission::W,
+            ),
+            None,
+        );
         (
             memory_set,
-            user_stack_base,
+            user_stack_top,
             elf.header.pt2.entry_point() as usize,
         )
     }
@@ -294,12 +327,12 @@ impl MemorySet {
         }
     }
 }
-
+/// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
-    pub vpn_range: VPNRange,
-    pub data_frames: BTreeMap<VirtPageNum, FrameTracker>,
-    pub map_type: MapType,
-    pub map_perm: MapPermission,
+    vpn_range: VPNRange,
+    data_frames: BTreeMap<VirtPageNum, FrameTracker>,
+    map_type: MapType,
+    map_perm: MapPermission,
 }
 
 impl MapArea {
@@ -396,6 +429,7 @@ impl MapArea {
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
+/// map type for memory set: identical or framed
 pub enum MapType {
     Identical,
     Framed,
@@ -415,7 +449,7 @@ bitflags! {
     }
 }
 
-/// test map function in page table
+/// remap test in kernel space
 #[allow(unused)]
 pub fn remap_test() {
     let mut kernel_space = KERNEL_SPACE.exclusive_access();
